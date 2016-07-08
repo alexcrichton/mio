@@ -1,4 +1,5 @@
 use {io, EventSet, PollOpt, Token};
+use poll::ReadinessQueue;
 use event::Event;
 use nix::sys::epoll::*;
 use nix::unistd::close;
@@ -19,7 +20,7 @@ pub struct Selector {
 }
 
 impl Selector {
-    pub fn new() -> io::Result<Selector> {
+    pub fn new(_queue: ReadinessQueue) -> io::Result<Selector> {
         // offset by 1 to avoid choosing 0 as the id of a selector
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let epfd = try!(epoll_create().map_err(super::from_nix_error));

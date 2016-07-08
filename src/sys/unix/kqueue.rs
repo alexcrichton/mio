@@ -1,5 +1,6 @@
 use {io, EventSet, PollOpt, Token};
 use event::{self, Event};
+use poll::ReadinessQueue;
 use nix::unistd::close;
 use nix::sys::event::{EventFilter, EventFlag, FilterFlag, KEvent, kqueue, kevent, kevent_ts};
 use nix::sys::event::{EV_ADD, EV_CLEAR, EV_DELETE, EV_DISABLE, EV_ENABLE, EV_EOF, EV_ERROR, EV_ONESHOT};
@@ -30,7 +31,7 @@ type UData = usize;
 type UData = i64;
 
 impl Selector {
-    pub fn new() -> io::Result<Selector> {
+    pub fn new(_queue: ReadinessQueue) -> io::Result<Selector> {
         // offset by 1 to avoid choosing 0 as the id of a selector
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed) + 1;
         let kq = try!(kqueue().map_err(super::from_nix_error));

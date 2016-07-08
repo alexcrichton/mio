@@ -79,7 +79,7 @@ struct RegistrationInner {
 }
 
 #[derive(Clone)]
-struct ReadinessQueue {
+pub struct ReadinessQueue {
     inner: Arc<UnsafeCell<ReadinessQueueInner>>,
 }
 
@@ -163,9 +163,10 @@ const AWAKEN: Token = Token(usize::MAX);
 impl Poll {
     /// Return a new `Poll` handle using a default configuration.
     pub fn new() -> io::Result<Poll> {
+        let queue = try!(ReadinessQueue::new());
         let poll = Poll {
-            selector: try!(sys::Selector::new()),
-            readiness_queue: try!(ReadinessQueue::new()),
+            selector: try!(sys::Selector::new(queue.clone())),
+            readiness_queue: queue,
         };
 
         // Register the notification wakeup FD with the IO poller
@@ -300,19 +301,15 @@ impl Registration {
     /// The returned `Registration` will be associated with this `Poll` for its
     /// entire lifetime.
     pub fn new(poll: &Poll, token: Token, interest: EventSet, opts: PollOpt) -> (Registration, SetReadiness) {
-        let inner = RegistrationInner::new(poll, token, interest, opts);
-        let registration = Registration { inner: inner.clone() };
-        let set_readiness = SetReadiness { inner: inner.clone() };
-
-        (registration, set_readiness)
+        new_registration(&poll.readiness_queue, token, interest, opts)
     }
 
     pub fn update(&self, poll: &Poll, token: Token, interest: EventSet, opts: PollOpt) -> io::Result<()> {
-        self.inner.update(poll, token, interest, opts)
+        self.inner.update(&poll.readiness_queue, token, interest, opts)
     }
 
     pub fn deregister(&self, poll: &Poll) -> io::Result<()> {
-        self.inner.update(poll, Token(0), EventSet::none(), PollOpt::empty())
+        deregister_registration(self, &poll.readiness_queue)
     }
 }
 
@@ -332,6 +329,31 @@ impl fmt::Debug for Registration {
 
 unsafe impl Send for Registration { }
 
+pub fn new_registration(queue: &ReadinessQueue,
+                        token: Token,
+                        interest: EventSet,
+                        opts: PollOpt) -> (Registration, SetReadiness) {
+    let inner = RegistrationInner::new(queue, token, interest, opts);
+    let registration = Registration { inner: inner.clone() };
+    let set_readiness = SetReadiness { inner: inner.clone() };
+
+    (registration, set_readiness)
+}
+
+#[allow(unused)]
+pub fn update_registration(registration: &Registration,
+                           queue: &ReadinessQueue,
+                           token: Token,
+                           interest: EventSet,
+                           opts: PollOpt) -> io::Result<()> {
+    registration.inner.update(queue, token, interest, opts)
+}
+
+pub fn deregister_registration(registration: &Registration,
+                               queue: &ReadinessQueue) -> io::Result<()> {
+    registration.inner.update(queue, Token(0), EventSet::none(), PollOpt::empty())
+}
+
 impl SetReadiness {
     pub fn readiness(&self) -> EventSet {
         self.inner.readiness()
@@ -346,19 +368,25 @@ unsafe impl Send for SetReadiness { }
 unsafe impl Sync for SetReadiness { }
 
 impl RegistrationInner {
-    fn new(poll: &Poll, token: Token, interest: EventSet, opts: PollOpt) -> RegistrationInner {
-        let queue = poll.readiness_queue.clone();
+    fn new(queue: &ReadinessQueue,
+           token: Token,
+           interest: EventSet,
+           opts: PollOpt) -> RegistrationInner {
         let node = queue.new_readiness_node(token, interest, opts, 1);
 
         RegistrationInner {
             node: node,
-            queue: queue,
+            queue: queue.clone(),
         }
     }
 
-    fn update(&self, poll: &Poll, token: Token, interest: EventSet, opts: PollOpt) -> io::Result<()> {
+    fn update(&self,
+              queue: &ReadinessQueue,
+              token: Token,
+              interest: EventSet,
+              opts: PollOpt) -> io::Result<()> {
         // Update the registration data
-        try!(self.registration_data_mut(&poll.readiness_queue)).update(token, interest, opts);
+        try!(self.registration_data_mut(&queue)).update(token, interest, opts);
 
         // If the node is currently ready, re-queue?
         if !event::is_empty(self.readiness()) {
@@ -388,6 +416,8 @@ impl RegistrationInner {
         // permitted to be visible ad-hoc. The `queue_for_processing` function
         // will set a `Release` barrier ensuring eventual consistency.
         self.node().events.store(event::as_usize(ready), Ordering::Relaxed);
+
+        trace!("readiness event {:?} {:?}", ready, self.node().token());
 
         // Setting readiness to none doesn't require any processing by the poll
         // instance, so there is no need to enqueue the node. No barrier is
@@ -536,8 +566,8 @@ impl ReadinessQueue {
                 // Enter a loop attempting to unset the "queued" bit or requeuing
                 // the node.
                 loop {
-                    // In the following conditions, the registration is removed from
-                    // the readiness queue:
+                    // In the following conditions, the registration is removed
+                    // from the readiness queue:
                     //
                     // - The registration is edge triggered.
                     // - The event set contains no events
@@ -546,21 +576,21 @@ impl ReadinessQueue {
                     // If the drop flag is set though, the node is never queued
                     // again.
                     if event::is_drop(events) {
-                        // dropped nodes are always processed immediately. There is
-                        // also no need to unset the queued bit as the node should
-                        // not change anymore.
+                        // dropped nodes are always processed immediately. There
+                        // is also no need to unset the queued bit as the node
+                        // should not change anymore.
                         break;
                     } else if opts.is_edge() || event::is_empty(events) {
                         // An acquire barrier is set in order to re-read the
                         // `events field. `Release` is not needed as we have not
-                        // mutated any field that we need to expose to the producer
-                        // thread.
+                        // mutated any field that we need to expose to the
+                        // producer thread.
                         let next = node_ref.queued.compare_and_swap(queued, 0, Ordering::Acquire);
 
                         // Re-read in order to ensure we have the latest value
-                        // after having marked the registration has dequeued from
-                        // the readiness queue. Again, `Relaxed` is OK since we set
-                        // the barrier above.
+                        // after having marked the registration has dequeued
+                        // from the readiness queue. Again, `Relaxed` is OK
+                        // since we set the barrier above.
                         events = node_ref.poll_events();
 
                         if queued == next {
@@ -569,13 +599,13 @@ impl ReadinessQueue {
 
                         queued = next;
                     } else {
-                        // The node needs to stay queued for readiness, so it gets
-                        // pushed back onto the queue.
+                        // The node needs to stay queued for readiness, so it
+                        // gets pushed back onto the queue.
                         //
-                        // TODO: It would be better to build up a batch list that
-                        // requires a single CAS. Also, `Relaxed` ordering would be
-                        // OK here as the prepend only needs to be visible by the
-                        // current thread.
+                        // TODO: It would be better to build up a batch list
+                        // that requires a single CAS. Also, `Relaxed` ordering
+                        // would be OK here as the prepend only needs to be
+                        // visible by the current thread.
                         let needs_wakeup = self.prepend_readiness_node(node.clone());
                         debug_assert!(!needs_wakeup, "something funky is going on");
                         break;
@@ -592,6 +622,7 @@ impl ReadinessQueue {
 
                 // TODO: Don't push the event if the capacity of `dst` has
                 // been reached
+                trace!("readiness event {:?} {:?}", events, node_ref.token());
                 dst.push_event(Event::new(events, node_ref.token()));
 
                 // If one-shot, disarm the node
@@ -699,6 +730,7 @@ impl ReadinessQueue {
 }
 
 unsafe impl Send for ReadinessQueue { }
+unsafe impl Sync for ReadinessQueue {}
 
 impl ReadinessNode {
     fn new(token: Token, interest: EventSet, opts: PollOpt, ref_count: usize) -> ReadinessNode {
