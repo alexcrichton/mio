@@ -44,7 +44,7 @@ struct SelectorInner {
 
 impl Selector {
     pub fn new() -> io::Result<Selector> {
-        CompletionPort::new(1).map(|cp| {
+        CompletionPort::new(8).map(|cp| {
             Selector {
                 inner: Arc::new(SelectorInner {
                     port: cp,
