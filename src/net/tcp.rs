@@ -89,6 +89,14 @@ impl TcpStream {
         self.sys.set_keepalive(seconds)
     }
 
+    pub fn set_send_buffer_size(&self, size: usize) -> io::Result<()> {
+        self.sys.set_send_buffer_size(size)
+    }
+
+    pub fn set_recv_buffer_size(&self, size: usize) -> io::Result<()> {
+        self.sys.set_recv_buffer_size(size)
+    }
+
     pub fn take_socket_error(&self) -> io::Result<()> {
         self.sys.take_socket_error()
     }

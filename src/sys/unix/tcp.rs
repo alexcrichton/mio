@@ -69,6 +69,14 @@ impl TcpStream {
         TcpStreamExt::set_nodelay(&self.inner, nodelay)
     }
 
+    pub fn set_send_buffer_size(&self, size: usize) -> io::Result<()> {
+        TcpStreamExt::set_send_buffer_size(&self.inner, size)
+    }
+
+    pub fn set_recv_buffer_size(&self, size: usize) -> io::Result<()> {
+        TcpStreamExt::set_recv_buffer_size(&self.inner, size)
+    }
+
     pub fn set_keepalive(&self, seconds: Option<u32>) -> io::Result<()> {
         self.inner.set_keepalive_ms(seconds.map(|s| s * 1000))
     }
