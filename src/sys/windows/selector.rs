@@ -201,6 +201,25 @@ impl Binding {
         selector.inner.port.add_socket(usize::from(token), handle)
     }
 
+    /// Same as `reregister`, except that it only takes an instance of `Poll`
+    /// and no other object handle.
+    ///
+    /// This function will register this instance of `Binding` to the `Poll`
+    /// specified, and it's the job of the caller to associate the relevant I/O
+    /// object with the IOCP object returned if possible.
+    ///
+    /// This function returns a handle to the raw underlying IOCP object if
+    /// successful.
+    pub unsafe fn register(&self, poll: &Poll) -> io::Result<RawHandle> {
+        let selector = poll::selector(poll);
+
+        // Ignore errors, we'll see them on the next line.
+        drop(self.selector.fill(selector.inner.clone()));
+        try!(self.check_same_selector(poll));
+
+        Ok(selector.inner.port.as_raw_handle())
+    }
+
     /// Reregisters the handle provided from the `Poll` provided.
     ///
     /// This is intended to be used as part of `Evented::reregister` but note
@@ -233,6 +252,20 @@ impl Binding {
         self.check_same_selector(poll)
     }
 
+    /// Same as `reregister_handle`, except that it only takes an instance of
+    /// `Poll` and no other object handle.
+    ///
+    /// This function will reregister this instance of `Binding` to the `Poll`
+    /// specified, and it's the job of the caller to reassociate the relevant
+    /// I/O object with the IOCP object returned if possible.
+    ///
+    /// This function returns a handle to the raw underlying IOCP object if
+    /// successful.
+    pub unsafe fn reregister(&self, poll: &Poll) -> io::Result<RawHandle> {
+        try!(self.check_same_selector(poll));
+        Ok(poll::selector(poll).inner.port.as_raw_handle())
+    }
+
     /// Deregisters the handle provided from the `Poll` provided.
     ///
     /// This is intended to be used as part of `Evented::deregister` but note
@@ -257,6 +290,20 @@ impl Binding {
                                     _socket: &AsRawSocket,
                                     poll: &Poll) -> io::Result<()> {
         self.check_same_selector(poll)
+    }
+
+    /// Same as `deregister_handle`, except that it only takes an instance of
+    /// `Poll` and no other object handle.
+    ///
+    /// This function will disassociate this instance of `Binding` from the
+    /// `Poll` specified, and it's the job of the caller to disassociate the
+    /// relevant I/O object with the IOCP object returned if possible.
+    ///
+    /// This function returns a handle to the raw underlying IOCP object if
+    /// successful.
+    pub unsafe fn deregister(&self, poll: &Poll) -> io::Result<RawHandle> {
+        try!(self.check_same_selector(poll));
+        Ok(poll::selector(poll).inner.port.as_raw_handle())
     }
 
     fn check_same_selector(&self, poll: &Poll) -> io::Result<()> {
